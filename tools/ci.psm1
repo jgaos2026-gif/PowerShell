@@ -231,7 +231,7 @@ function Invoke-WithRetry
 
         [int] $InitialDelaySec = 5,
 
-        [string] $TestFailurePattern = 'test(s)? (failed|error)|pester.*fail|xunit.*fail'
+        [string] $TestFailurePattern = '(?i)test(s)? (failed|error)|pester.*fail|xunit.*fail'
     )
 
     $attempt = 0

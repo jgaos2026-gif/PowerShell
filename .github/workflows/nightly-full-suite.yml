@@ -34,11 +34,14 @@ jobs:
   nightly_build:
     name: Build PowerShell
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1000
+          ref: ${{ inputs.branch || github.ref }}
 
       - name: Build
         uses: "./.github/actions/build/ci"
@@ -49,6 +52,8 @@ jobs:
   xunit_tests:
     name: xUnit Tests
     needs: nightly_build
+    permissions:
+      contents: read
     uses: ./.github/workflows/xunit-tests.yml
     with:
       runner_os: ubuntu-latest
@@ -61,11 +66,14 @@ jobs:
     name: Pester Unelevated CI
     needs: nightly_build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1000
+          ref: ${{ inputs.branch || github.ref }}
       - name: Pester Unelevated CI
         uses: "./.github/actions/test/nix"
         with:
@@ -78,11 +86,14 @@ jobs:
     name: Pester Elevated CI
     needs: nightly_build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1000
+          ref: ${{ inputs.branch || github.ref }}
       - name: Pester Elevated CI
         uses: "./.github/actions/test/nix"
         with:
@@ -98,11 +109,14 @@ jobs:
     name: Pester Unelevated Others
     needs: nightly_build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1000
+          ref: ${{ inputs.branch || github.ref }}
       - name: Pester Unelevated Others
         uses: "./.github/actions/test/nix"
         with:
@@ -115,11 +129,14 @@ jobs:
     name: Pester Elevated Others
     needs: nightly_build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1000
+          ref: ${{ inputs.branch || github.ref }}
       - name: Pester Elevated Others
         uses: "./.github/actions/test/nix"
         with:
@@ -134,11 +151,14 @@ jobs:
   infrastructure_tests:
     name: Infrastructure Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1000
+          ref: ${{ inputs.branch || github.ref }}
 
       - name: Install Pester
         shell: pwsh
@@ -187,6 +207,7 @@ jobs:
       - infrastructure_tests
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Check results
         shell: pwsh
