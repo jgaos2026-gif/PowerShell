@@ -198,6 +198,68 @@ function Invoke-CIInstall
     Set-BuildVariable -Name TestPassed -Value False
 }
 
+# Retry an infrastructure operation up to MaxAttempts times with exponential backoff.
+# Test failures (thrown by Test-*Results functions) are re-thrown immediately without retry.
+function Invoke-WithRetry
+{
+    <#
+    .SYNOPSIS
+        Retries a script block on infrastructure failures with exponential backoff.
+    .DESCRIPTION
+        Executes the provided ScriptBlock up to MaxAttempts times.  A delay of
+        InitialDelaySec * 2^(attempt-1) seconds is inserted between attempts.
+        Errors whose message matches the TestFailurePattern are considered real
+        test failures and are re-thrown immediately without further retries.
+    .PARAMETER ScriptBlock
+        The operation to attempt.
+    .PARAMETER MaxAttempts
+        Maximum number of attempts. Default: 3.
+    .PARAMETER InitialDelaySec
+        Seconds to wait before the second attempt. Doubles each subsequent attempt. Default: 5.
+    .PARAMETER TestFailurePattern
+        Regex pattern identifying non-retriable test-failure messages. Default matches
+        common Test-*Results failure strings.
+    .EXAMPLE
+        Invoke-WithRetry -ScriptBlock { Start-PSxUnit } -MaxAttempts 3
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [scriptblock] $ScriptBlock,
+
+        [int] $MaxAttempts = 3,
+
+        [int] $InitialDelaySec = 5,
+
+        [string] $TestFailurePattern = 'test(s)? (failed|error)|pester.*fail|xunit.*fail'
+    )
+
+    $attempt = 0
+    do {
+        $attempt++
+        try {
+            & $ScriptBlock
+            return
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+            # Re-throw immediately for real test failures — no point retrying
+            if ($errorMessage -match $TestFailurePattern) {
+                throw
+            }
+
+            if ($attempt -ge $MaxAttempts) {
+                Write-Warning "Invoke-WithRetry: all $MaxAttempts attempts exhausted. Last error: $errorMessage"
+                throw
+            }
+
+            $delaySec = $InitialDelaySec * [Math]::Pow(2, $attempt - 1)
+            Write-Warning "Invoke-WithRetry: attempt $attempt failed (infrastructure error). Retrying in ${delaySec}s... Error: $errorMessage"
+            Start-Sleep -Seconds $delaySec
+        }
+    } while ($attempt -lt $MaxAttempts)
+}
+
 function Invoke-CIxUnit
 {
     param(
@@ -218,7 +280,12 @@ function Invoke-CIxUnit
 
     $xUnitTestResultsFile = Join-Path -Path $PWD -ChildPath "xUnitTestResults.xml"
 
-    Start-PSxUnit -xUnitTestResultsFile $xUnitTestResultsFile
+    # Retry xUnit execution up to 3 times on infrastructure failures (e.g. transient
+    # dotnet/SDK issues).  Real test failures surface through Test-XUnitTestResults
+    # and are not retried.
+    Invoke-WithRetry -ScriptBlock {
+        Start-PSxUnit -xUnitTestResultsFile $xUnitTestResultsFile
+    }
     Push-Artifact -Path $xUnitTestResultsFile -name xunit
 
     if(!$SkipFailing.IsPresent)
@@ -423,7 +490,7 @@ function Invoke-CITest
                 $arguments['Path'] = $testFiles
             }
 
-            $title = "Pester Experimental >levated - $featureName"
+            $title = "Pester Experimental Elevated - $featureName"
             if ($TitlePrefix) {
                 $title = "$TitlePrefix - $title"
             }

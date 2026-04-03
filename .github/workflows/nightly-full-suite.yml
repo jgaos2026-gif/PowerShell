@@ -1,0 +1,205 @@
+name: Nightly Full Test Suite
+
+# Runs the complete test suite (CI + Others tag sets) on a nightly schedule and on
+# demand.  This covers the Feature/Scenario tests that are excluded from PR CI runs,
+# providing the "5-pass" stability gate and comprehensive scenario coverage described
+# in the test plan.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test (default: master)'
+        required: false
+        default: 'master'
+
+  schedule:
+    # Run at 02:00 UTC every day
+    - cron: '0 2 * * *'
+
+concurrency:
+  group: nightly-full-suite-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+  POWERSHELL_TELEMETRY_OPTOUT: 1
+  __SuppressAnsiEscapeSequences: 1
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Build
+  # ────────────────────────────────────────────────────────────────────────────
+  nightly_build:
+    name: Build PowerShell
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1000
+
+      - name: Build
+        uses: "./.github/actions/build/ci"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # xUnit tests (Layer 1)
+  # ────────────────────────────────────────────────────────────────────────────
+  xunit_tests:
+    name: xUnit Tests
+    needs: nightly_build
+    uses: ./.github/workflows/xunit-tests.yml
+    with:
+      runner_os: ubuntu-latest
+      test_results_artifact_name: nightly-testResults-xunit
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Pester CI tag set — unelevated + elevated (Layer 2)
+  # ────────────────────────────────────────────────────────────────────────────
+  pester_unelevated_ci:
+    name: Pester Unelevated CI
+    needs: nightly_build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1000
+      - name: Pester Unelevated CI
+        uses: "./.github/actions/test/nix"
+        with:
+          purpose: UnelevatedPesterTests
+          tagSet: CI
+          ctrfFolder: ctrf-unelevated-ci
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pester_elevated_ci:
+    name: Pester Elevated CI
+    needs: nightly_build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1000
+      - name: Pester Elevated CI
+        uses: "./.github/actions/test/nix"
+        with:
+          purpose: ElevatedPesterTests
+          tagSet: CI
+          ctrfFolder: ctrf-elevated-ci
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Pester Others tag set — Feature/Scenario tests (Layer 3)
+  # ────────────────────────────────────────────────────────────────────────────
+  pester_unelevated_others:
+    name: Pester Unelevated Others
+    needs: nightly_build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1000
+      - name: Pester Unelevated Others
+        uses: "./.github/actions/test/nix"
+        with:
+          purpose: UnelevatedPesterTests
+          tagSet: Others
+          ctrfFolder: ctrf-unelevated-others
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pester_elevated_others:
+    name: Pester Elevated Others
+    needs: nightly_build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1000
+      - name: Pester Elevated Others
+        uses: "./.github/actions/test/nix"
+        with:
+          purpose: ElevatedPesterTests
+          tagSet: Others
+          ctrfFolder: ctrf-elevated-others
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Infrastructure tests (Layer 4)
+  # ────────────────────────────────────────────────────────────────────────────
+  infrastructure_tests:
+    name: Infrastructure Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1000
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Import-Module ./tools/ci.psm1
+          Install-CIPester
+
+      - name: Run Infrastructure Tests
+        shell: pwsh
+        run: |
+          $testResultsFolder = Join-Path $PWD "testResults"
+          New-Item -ItemType Directory -Path $testResultsFolder -Force | Out-Null
+
+          $config = New-PesterConfiguration
+          $config.Run.Path = './test/infrastructure/'
+          $config.Run.PassThru = $true
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputFormat = 'NUnitXml'
+          $config.TestResult.OutputPath = "$testResultsFolder/InfrastructureTests.xml"
+          $config.Output.Verbosity = 'Detailed'
+
+          $result = Invoke-Pester -Configuration $config
+
+          if ($result.FailedCount -gt 0 -or $result.Result -eq 'Failed') {
+            throw "Infrastructure tests failed"
+          }
+
+      - name: Publish Test Results
+        uses: "./.github/actions/test/process-pester-results"
+        if: always()
+        with:
+          name: "nightly-InfrastructureTests"
+          testResultsFolder: "${{ github.workspace }}/testResults"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Final status gate — all jobs must succeed
+  # ────────────────────────────────────────────────────────────────────────────
+  nightly_ready:
+    name: Nightly Full Suite — Ready
+    needs:
+      - xunit_tests
+      - pester_unelevated_ci
+      - pester_elevated_ci
+      - pester_unelevated_others
+      - pester_elevated_others
+      - infrastructure_tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        shell: pwsh
+        run: |
+          $needs = '${{ toJson(needs) }}' | ConvertFrom-Json
+          $failed = @()
+          foreach ($job in $needs.PSObject.Properties) {
+            if ($job.Value.result -notin @('success', 'skipped')) {
+              $failed += $job.Name
+            }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error "The following nightly jobs did not succeed: $($failed -join ', ')"
+            exit 1
+          }
+          Write-Host "All nightly jobs passed." -ForegroundColor Green
